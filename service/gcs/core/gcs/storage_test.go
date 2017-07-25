@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"syscall"
-	"time"
 
 	"github.com/Microsoft/opengcs/service/gcs/oslayer/realos"
 	"github.com/Microsoft/opengcs/service/gcs/prot"
@@ -202,17 +201,7 @@ var _ = Describe("Storage", func() {
 		})
 		SetupLoopbacks := func(layers []string) {
 			for i, layer := range layers {
-				const retries = 10
-				var out []byte
-				var err error
-				// Retry losetup a certain number of times.
-				for r := 0; r < retries; r++ {
-					out, err = exec.Command("losetup", fmt.Sprintf("/dev/loop%d", i), layer).CombinedOutput()
-					if err == nil {
-						break
-					}
-					time.Sleep(time.Millisecond * 10)
-				}
+				out, err := exec.Command("losetup", fmt.Sprintf("/dev/loop%d", i), layer).CombinedOutput()
 				if err != nil {
 					// Provide some extra information to the error.
 					err = fmt.Errorf("%s: %s", out, err)
@@ -222,11 +211,22 @@ var _ = Describe("Storage", func() {
 		}
 		UnsetupLoopbacks := func(numLoopbacks int) {
 			for i := 0; i < numLoopbacks; i++ {
-				out, err := exec.Command("losetup", "-d", fmt.Sprintf("/dev/loop%d", i)).CombinedOutput()
+				path := fmt.Sprintf("/dev/loop%d", i)
+				out, err := exec.Command("losetup", "-d", path).CombinedOutput()
 				if err != nil {
 					// Provide some extra information to the error.
 					err = fmt.Errorf("%s: %s", out, err)
 					Expect(err).NotTo(HaveOccurred())
+				}
+
+				mounted, err := coreint.OS.PathIsMounted(path)
+				Expect(err).NotTo(HaveOccurred())
+				if mounted {
+					out, err = exec.Command("umount", path).CombinedOutput()
+					if err != nil {
+						err = fmt.Errorf("%s: %s", out, err)
+						Expect(err).NotTo(HaveOccurred())
+					}
 				}
 			}
 		}
@@ -251,27 +251,27 @@ var _ = Describe("Storage", func() {
 					Expect(err).NotTo(HaveOccurred())
 				}
 
-				// Mount the new layer to a directory.
-				tempDir, err := ioutil.TempDir("", "gcs_test_layer")
-				Expect(err).NotTo(HaveOccurred())
-				out, err = exec.Command("mount", layer, tempDir).CombinedOutput()
-				if err != nil {
-					// Provide some extra information to the error.
-					err = fmt.Errorf("%s: %s", out, err)
-					Expect(err).NotTo(HaveOccurred())
-				}
-
-				// Create files in the layer.
 				if fileMaps != nil {
+					// Mount the new layer to a directory.
+					tempDir, err := ioutil.TempDir("", "gcs_test_layer")
+					Expect(err).NotTo(HaveOccurred())
+					out, err = exec.Command("mount", "-o", "sync,dirsync", layer, tempDir).CombinedOutput()
+					if err != nil {
+						// Provide some extra information to the error.
+						err = fmt.Errorf("%s: %s", out, err)
+						Expect(err).NotTo(HaveOccurred())
+					}
+
+					// Create files in the layer.
 					for file, contents := range fileMaps[i] {
 						err := ioutil.WriteFile(filepath.Join(tempDir, file), []byte(contents), 0777)
 						Expect(err).NotTo(HaveOccurred())
 					}
-				}
 
-				// Unmount the layer.
-				err = syscall.Unmount(tempDir, 0)
-				Expect(err).NotTo(HaveOccurred())
+					// Unmount the layer.
+					err = syscall.Unmount(tempDir, 0)
+					Expect(err).NotTo(HaveOccurred())
+				}
 			}
 		}
 		DestroyLayers := func(layers []string) {
@@ -814,7 +814,7 @@ var _ = Describe("Storage", func() {
 					Expect(mounted).To(BeFalse())
 				})
 			})
-			Context("mounting layers outside inside the container namespace", func() {
+			Context("mounting layers inside the container namespace", func() {
 				var (
 					layers     []string
 					layer1Path string
@@ -895,6 +895,54 @@ var _ = Describe("Storage", func() {
 					ms := []*mountSpec{{Source: "/dev/fakeloop"}}
 					err = coreint.mountMappedVirtualDisks([]prot.MappedVirtualDisk{disk}, ms)
 					Expect(err).To(HaveOccurred())
+				})
+			})
+			Context("mounting and unmounting mapped virtual disks with AttachOnly true", func() {
+				var (
+					layers     []string
+					layer1Path string
+					disk1      prot.MappedVirtualDisk
+				)
+				BeforeEach(func() {
+					layers = []string{"attachonlylayer1"}
+					GenerateLayers(layers, nil)
+					coreint.containerCache[containerID] = newContainerCacheEntry(containerID)
+					layer1Path = "/mnt/test/attachonlylayer1"
+					disk1 = prot.MappedVirtualDisk{
+						AttachOnly: true,
+					}
+				})
+				AfterEach(func() {
+					DestroyLayers(layers)
+				})
+				It("Not to have mounted.", func() {
+					// Call mount on the disks.
+					err = coreint.containerCache[containerID].AddMappedVirtualDisk(disk1)
+					Expect(err).NotTo(HaveOccurred())
+
+					ms := []*mountSpec{&mountSpec{}}
+					err = coreint.mountMappedVirtualDisks([]prot.MappedVirtualDisk{disk1}, ms)
+					Expect(err).NotTo(HaveOccurred())
+
+					// Check the state of attachonlylayer1.
+					exists, err := coreint.OS.PathExists(layer1Path)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(exists).To(BeFalse())
+					mounted, err := coreint.OS.PathIsMounted(layer1Path)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(mounted).To(BeFalse())
+
+					// Verify calling unmount does nothing.
+					err = coreint.unmountMappedVirtualDisks([]prot.MappedVirtualDisk{disk1})
+					Expect(err).NotTo(HaveOccurred())
+
+					// Check the final state of attachonlylayer1.
+					exists, err = coreint.OS.PathExists(layer1Path)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(exists).To(BeFalse())
+					mounted, err = coreint.OS.PathIsMounted(layer1Path)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(mounted).To(BeFalse())
 				})
 			})
 		})
