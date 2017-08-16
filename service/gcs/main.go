@@ -56,12 +56,8 @@ func main() {
 	}
 	os := realos.NewOS()
 	coreint := gcs.NewGCSCore(rtime, os)
-	mux := bridge.NewBridgeMux()
-	b := bridge.Bridge{
-		Transport: tport,
-		Handler:   mux,
-	}
-	b.AssignHandlers(mux, coreint)
+	b := &bridge.Bridge{Transport: tport}
+	b.Handler = gcs.NewGcsHandler(b, coreint)
 	err = b.ListenAndServe()
 	if err != nil {
 		logrus.Fatal(err)

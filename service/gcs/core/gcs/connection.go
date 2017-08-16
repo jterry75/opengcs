@@ -1,4 +1,4 @@
-package bridge
+package gcs
 
 import (
 	"github.com/Microsoft/opengcs/service/gcs/prot"
