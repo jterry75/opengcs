@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sync"
 	"syscall"
+	"time"
 
 	gcserr "github.com/Microsoft/opengcs/service/gcs/errors"
 	"github.com/Microsoft/opengcs/service/gcs/oslayer"
@@ -543,7 +544,7 @@ func (c *gcsCore) WaitContainer(id string) (int, error) {
 }
 
 // WaitProcess waits for a process to complete and returns its exit code.
-func (c *gcsCore) WaitProcess(pid int) (int, error) {
+func (c *gcsCore) WaitProcess(pid int, timeoutInMs uint32) (int, error) {
 	c.processCacheMutex.Lock()
 	entry, ok := c.processCache[pid]
 	if !ok {
@@ -552,8 +553,18 @@ func (c *gcsCore) WaitProcess(pid int) (int, error) {
 	}
 	c.processCacheMutex.Unlock()
 
-	entry.exitWg.Wait()
-	return entry.exitCode, nil
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		entry.exitWg.Wait()
+	}()
+
+	select {
+	case <-done:
+		return entry.exitCode, nil
+	case <-time.After(time.Duration(timeoutInMs) * time.Millisecond):
+		return -1, errors.New("timeout")
+	}
 }
 
 // setupMappedVirtualDisks is a helper function which calls into the functions

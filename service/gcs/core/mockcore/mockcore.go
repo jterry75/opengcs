@@ -76,6 +76,7 @@ type WaitContainerCall struct {
 // WaitProcessCall captures the arguments of WaitProcess
 type WaitProcessCall struct {
 	Pid int
+	TimeoutInMs uint32
 }
 
 // MockCore serves as an argument capture mechanism which implements the Core
@@ -192,9 +193,10 @@ func (c *MockCore) WaitContainer(id string) (int, error) {
 }
 
 // WaitProcess captures its arguments and returns a nil error.
-func (c *MockCore) WaitProcess(pid int) (int, error) {
+func (c *MockCore) WaitProcess(pid int, timeoutInMs uint32) (int, error) {
 	c.LastWaitProcess = WaitProcessCall{
 		Pid = pid,
+		TimeoutInMs: timeoutInMs,
 	}
 	return -1, c.behaviorResult()
 }

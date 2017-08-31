@@ -515,7 +515,7 @@ func (b *Bridge) waitOnProcess(w ResponseWriter, r *Request) {
 	}
 	response.ActivityID = request.ActivityID
 
-	exitCode, err := b.coreint.WaitProcess(int(request.ProcessID))
+	exitCode, err := b.coreint.WaitProcess(int(request.ProcessID), request.TimeoutInMs)
 	if err != nil {
 		w.Error(err)
 		return
